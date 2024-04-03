@@ -1,0 +1,92 @@
+on: push
+
+name: Integration
+
+jobs:
+  scan:
+    runs-on: ubuntu-20.04
+    steps:
+      - uses: actions/checkout@v2
+      - name: Install Security Tools
+        run: |
+          TRIVY_VERSION=0.30.4
+          TFSEC_VERSION=1.26.3
+          GOSEC_VERSION=2.12.0
+
+          ## INSTALL TRIVY ##
+          curl -o trivy.tar.gz -L https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz
+          tar -xvf trivy.tar.gz
+          sudo mv trivy /usr/local/bin
+
+          ## INSTALL GOSEC ##
+          curl -o gosec.tar.gz -L https://github.com/securego/gosec/releases/download/v${GOSEC_VERSION}/gosec_${GOSEC_VERSION}_linux_amd64.tar.gz
+          tar xvf gosec.tar.gz
+          sudo mv gosec /usr/local/bin
+
+          ## INSTALL TFSEC ##
+          curl -o tfsec -L https://github.com/aquasecurity/tfsec/releases/download/v${TFSEC_VERSION}/tfsec-linux-amd64
+          chmod +x tfsec
+          sudo mv tfsec /usr/local/bin
+
+      - name: Scan with Trivy
+        run: |
+          trivy fs --security-checks vuln,secret --exit-code 1 ./
+      - name: Scan with GoSec
+        run: |
+          gosec ./...
+      - name: Scan with tfsec
+        run: |
+          tfsec -m HIGH
+  build:
+    needs: [scan]
+    strategy:
+      matrix:
+        os:
+          - ubuntu-latest
+          - macos-latest
+          - windows-latest
+        go_version:
+          - 1.16
+          - 1.17
+          - 1.18
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v2
+      - uses: actions/setup-go@v3
+        with:
+          go-version: ${{ matrix.go_version }}
+      - name: Build
+        env:
+          CGO_ENABLED: 0
+        run: |
+          go build -o myproject
+      - name: Run Tests
+        run: |
+          go test
+      - name: Integration Test
+        shell: bash
+        run: |
+          ./myproject &
+          sleep 2
+          res=$(curl localhost:3000)
+          [[ $res == 'Hello, World!' ]]
+
+  docker-build:
+    runs-on: ubuntu-20.04
+    needs: [build]
+    steps:
+      - uses: actions/checkout@v2
+      - name: Build
+        run: |
+          docker build . -t docker_demo:pipeline
+      - name: Install trivy
+        run: |
+          TRIVY_VERSION=0.30.4
+
+          curl -o trivy.tar.gz -L https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz
+          tar -xvf trivy.tar.gz
+          sudo mv trivy /usr/local/bin
+
+      - name: Scan Image with trivy
+        run: |
+          trivy image --security-checks vuln,config,secret -s HIGH,CRITICAL --exit-code 1 docker_demo:pipeline
